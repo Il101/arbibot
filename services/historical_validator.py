@@ -212,6 +212,8 @@ class HistoricalValidator:
     async def analyze(
         self,
         symbol: str,
+        ex_a: str = 'bingx',
+        ex_b: str = 'bybit',
         timeframe: Optional[str] = None,
         limit: Optional[int] = None
     ) -> Dict:
@@ -220,34 +222,45 @@ class HistoricalValidator:
         
         Args:
             symbol: Trading pair symbol (e.g., 'BTC/USDT')
+            ex_a: First exchange ID
+            ex_b: Second exchange ID
             timeframe: Candle timeframe (defaults to config value)
             limit: Number of candles (defaults to config value)
-            
-        Returns:
-            Dictionary with analysis results:
-            {
-                'symbol': str,
-                'is_stationary': bool,
-                'adf_pvalue': float,
-                'max_spread_pct': float,
-                'z_score_signals': int,
-                'is_profitable': bool
-            }
         """
+        # Ensure exchanges are available
+        for ex_id in [ex_a, ex_b]:
+            if ex_id not in self.exchanges:
+                self.logger.info(f"Adding {ex_id} to validator dynamically...")
+                try:
+                    # Generic CCXT setup for additional exchanges
+                    ex_class = getattr(ccxt, ex_id)
+                    ex_config = self.config.get('exchanges', {}).get(ex_id, {})
+                    
+                    self.exchanges[ex_id] = ex_class({
+                        'enableRateLimit': True,
+                        'options': {
+                            'defaultType': ex_config.get('default_type', 'swap')
+                        }
+                    })
+                    await self.exchanges[ex_id].load_markets()
+                except Exception as e:
+                    self.logger.error(f"Failed to initialize {ex_id}: {e}")
+                    return {'symbol': symbol, 'error': f'Exchange {ex_id} not supported'}
+
         # Use config defaults if not provided
         if timeframe is None:
             timeframe = self.config['validation']['timeframe']
         if limit is None:
             limit = self.config['validation']['candles_limit']
         
-        self.logger.info(f"Analyzing {symbol} with {timeframe} timeframe, {limit} candles")
+        self.logger.info(f"Analyzing {symbol} on {ex_a}/{ex_b} | {timeframe}, {limit} candles")
         
         # Fetch data from both exchanges
-        bingx_df = await self.fetch_ohlcv(self.exchanges['bingx'], symbol, timeframe, limit)
-        bybit_df = await self.fetch_ohlcv(self.exchanges['bybit'], symbol, timeframe, limit)
+        df_a = await self.fetch_ohlcv(self.exchanges[ex_a], symbol, timeframe, limit)
+        df_b = await self.fetch_ohlcv(self.exchanges[ex_b], symbol, timeframe, limit)
         
-        if bingx_df is None or bybit_df is None:
-            self.logger.error("Failed to fetch data from one or both exchanges")
+        if df_a is None or df_b is None:
+            self.logger.error(f"Failed to fetch data from {ex_a} or {ex_b}")
             return {
                 'symbol': symbol,
                 'error': 'Data fetch failed',
@@ -259,10 +272,10 @@ class HistoricalValidator:
             }
         
         # Merge dataframes on timestamp (inner join)
-        bingx_df = bingx_df.rename(columns={'close': 'bingx_close'})
-        bybit_df = bybit_df.rename(columns={'close': 'bybit_close'})
+        df_a = df_a.rename(columns={'close': f'{ex_a}_close'})
+        df_b = df_b.rename(columns={'close': f'{ex_b}_close'})
         
-        df = pd.merge(bingx_df, bybit_df, on='timestamp', how='inner')
+        df = pd.merge(df_a, df_b, on='timestamp', how='inner')
         df = df.set_index('timestamp')
         
         self.logger.info(f"Data aligned: {len(df)} overlapping periods")
@@ -280,8 +293,8 @@ class HistoricalValidator:
             }
         
         # Calculate spread
-        df['spread'] = df['bingx_close'] - df['bybit_close']
-        df['spread_pct'] = df['spread'].abs() / df['bingx_close']
+        df['spread'] = df[f'{ex_a}_close'] - df[f'{ex_b}_close']
+        df['spread_pct'] = df['spread'].abs() / df[f'{ex_a}_close']
         
         # Run ADF test for stationarity
         is_stationary, adf_pvalue, adf_details = adf_test(df['spread'])
@@ -308,8 +321,10 @@ class HistoricalValidator:
             f"signals={z_score_signals}, profitable={is_profitable}"
         )
         
-        # Store dataframe for plotting
+        # Store metadata for plotting
         self._last_analysis_df = df
+        self._last_ex_a = ex_a
+        self._last_ex_b = ex_b
         
         return {
             'symbol': symbol,
@@ -358,16 +373,16 @@ class HistoricalValidator:
         # Plot 1: Prices
         axes[0].plot(
             df.index,
-            df['bingx_close'],
-            label='BingX',
+            df[f'{self._last_ex_a}_close'],
+            label=self._last_ex_a.capitalize(),
             color='blue',
             linewidth=2,
             alpha=0.6
         )
         axes[0].plot(
             df.index,
-            df['bybit_close'],
-            label='Bybit',
+            df[f'{self._last_ex_b}_close'],
+            label=self._last_ex_b.capitalize(),
             color='orange',
             linewidth=1,
             linestyle='--',
@@ -381,7 +396,7 @@ class HistoricalValidator:
         axes[1].plot(
             df.index,
             df['spread'],
-            label='Spread (BingX - Bybit)',
+            label=f'Spread ({self._last_ex_a} - {self._last_ex_b})',
             color='purple',
             linewidth=1
         )

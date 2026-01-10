@@ -274,8 +274,14 @@ class TelegramSignalManager:
                 self.logger.info(f"🔄 Symbol remapped via config: {base} -> {manual_map[base]}")
 
             # Resolve exchange-specific symbols
-            bingx_symbol = await self.resolver.resolve(self.validator.exchanges['bingx'], symbol)
-            bybit_symbol = await self.resolver.resolve(self.validator.exchanges['bybit'], symbol)
+            ex_a, ex_b = pair if 'pair' in locals() else ('bingx', 'bybit')
+            ex_a_obj = self.validator.exchanges.get(ex_a)
+            ex_b_obj = self.validator.exchanges.get(ex_b)
+            
+            # Resolve if obj exists, otherwise validator.analyze will handle it later
+            # but we need it here for immediate logging if possible
+            # To be safe, we just use the names for now as resolve() needs exchange objects
+            # which might not be initialized yet in validator.
             
             self.logger.info(
                 f"📍 Signal detected for {symbol} | Direction: {direction} | Spread: {reported_spread:.2%}"
@@ -322,9 +328,12 @@ class TelegramSignalManager:
                 return
 
             # 1. Historical Validation (ADF test)
-            self.logger.info(f"🔍 Running ADF test for {symbol}...")
+            ex_a, ex_b = metadata.get('pair', ('bingx', 'bybit'))
+            self.logger.info(f"🔍 Running ADF test for {symbol} on {ex_a}/{ex_b}...")
             results = await self.validator.analyze(
-                symbol=symbol, 
+                symbol=symbol,
+                ex_a=ex_a,
+                ex_b=ex_b,
                 timeframe=self.adf_timeframe, 
                 limit=self.adf_candles
             )
