@@ -427,9 +427,11 @@ class LiveMonitor:
         # === SIGNAL LOGIC ===
         
         # 1. ENTRY CONDITION
+        min_spread = self.config.get('trading', {}).get('min_spread_pct', 0.003) * 100 # Convert to %
+        
         is_entry_condition = (not self.in_position[symbol] and 
                             abs(z_score) > z_entry and 
-                            net_spread_pct > 0)
+                            net_spread_pct > min_spread)
         
         # 2. EXIT CONDITION
         is_exit_condition = (self.in_position[symbol] and 

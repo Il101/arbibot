@@ -79,6 +79,15 @@ class WebSocketManager:
         # Get EventBus instance for connection status updates
         self.event_bus = EventBus.instance()
     
+    def _safe_float(self, value: Any, default: float = 0.0) -> float:
+        """Safely convert value to float, handling empty strings and None."""
+        if value is None or value == '':
+            return default
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+    
     def _load_config(self, config_path: str) -> dict:
         """
         Load configuration from YAML file.
@@ -413,9 +422,9 @@ class WebSocketManager:
                     # BingX uses uppercase keys:
                     # A = Ask price, B = Bid price, c = Close/last price
                     # a = ask size, b = bid size (lowercase are sizes, not prices!)
-                    bid = float(data.get('B', 0))  # Uppercase B for bid price
-                    ask = float(data.get('A', 0))  # Uppercase A for ask price
-                    last = float(data.get('c', 0))  # Close/last price
+                    bid = self._safe_float(data.get('B', 0))  # Uppercase B for bid price
+                    ask = self._safe_float(data.get('A', 0))  # Uppercase A for ask price
+                    last = self._safe_float(data.get('c', 0))  # Close/last price
                     
                     # Fallback to last price if bid/ask not available
                     if bid == 0:
@@ -455,9 +464,9 @@ class WebSocketManager:
                     cached = self.latest_prices.get(exchange_name, {}).get(symbol, {})
                     
                     # Extract values, use cached if not present in delta
-                    bid = float(data.get('bid1Price', 0)) or cached.get('bid', 0)
-                    ask = float(data.get('ask1Price', 0)) or cached.get('ask', 0)
-                    last = float(data.get('lastPrice', 0)) or cached.get('last', 0)
+                    bid = self._safe_float(data.get('bid1Price')) or cached.get('bid', 0)
+                    ask = self._safe_float(data.get('ask1Price')) or cached.get('ask', 0)
+                    last = self._safe_float(data.get('lastPrice')) or cached.get('last', 0)
                     
                     normalized_data = {
                         'exchange': 'bybit',
