@@ -55,6 +55,10 @@ class HistoricalValidator:
         self.exchanges = self._setup_exchanges()
         self.resolver = SymbolResolver(self.config)
         
+        # Track last analyzed exchanges for plotting
+        self._last_ex_a = 'bingx'
+        self._last_ex_b = 'bybit'
+        
         self.logger.info("HistoricalValidator initialized successfully")
     
     def _load_config(self, config_path: str) -> dict:
