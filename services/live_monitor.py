@@ -324,6 +324,7 @@ class LiveMonitor:
         # Preserve sign of spread
         if gross_spread < 0:
             net_spread_val = -net_spread_val
+            net_spread_pct = -net_spread_pct
         
         # Calculate gross spread percentage for display
         gross_spread_pct = (abs(gross_spread) / mid_price) * 100 if mid_price > 0 else 0.0
@@ -601,6 +602,7 @@ class LiveMonitor:
         )
         if gross_spread < 0:
             net_spread_val = -net_spread_val
+            net_spread_pct = -net_spread_pct
         
         # Calculate Z-Score from historical baseline (GROSS spreads)
         spreads = list(self.spread_history[symbol])
@@ -618,6 +620,7 @@ class LiveMonitor:
             'symbol': symbol,
             'gross_spread': gross_spread,
             'net_spread': net_spread_val,
+            'net_spread_pct': net_spread_pct,
             'fee_cost': fee_cost,
             'z_score': z_score,
             'in_position': self.in_position.get(symbol, False),

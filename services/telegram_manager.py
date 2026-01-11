@@ -87,7 +87,8 @@ class TelegramSignalManager:
         # Blacklist for common false positives
         self.symbol_blacklist = {
             'HTTPS', 'HTTP', 'TRADE', 'INFO', 'HELP', 'LIMIT', 'MARKET', 'ТЕК', 'TEXT',
-            'CHART', 'FOLLOW', 'GRAPH', 'ГРАФИК', 'ГРАФ', 'СЛЕДИТЬ'
+            'CHART', 'FOLLOW', 'GRAPH', 'ГРАФИК', 'ГРАФ', 'СЛЕДИТЬ', 'SCORE', 'Z-SCORE',
+            'MONITORING', 'INITIAL', 'TARGET'
         }
         
         # Exchange name mapping: signal name -> internal exchange ID
@@ -364,7 +365,9 @@ class TelegramSignalManager:
                 if stats:
                     last_stats = stats
                     z_score = stats.get('z_score', 0)
-                    net_spread_pct = stats.get('net_spread', 0)
+                    # net_spread_pct is reported as percentage by monitor (e.g. 1.5 for 1.5%)
+                    # we convert it to fraction for comparison with config
+                    current_net_pct = abs(stats.get('net_spread_pct', 0)) / 100
                     
                     # Send status message once we have the first Z-score
                     if status_msg is None:
@@ -382,10 +385,9 @@ class TelegramSignalManager:
                             # Continue anyway, we might still confirm later
                             status_msg = False # Mark as attempted but failed
 
-                    # Check conditions
-                    z_threshold = self.tg_config.get('z_score_entry', 2.5)
+                    # Conditions (Z-score threshold and minimum profitable spread)
                     z_cond = abs(z_score) > z_threshold
-                    spread_cond = net_spread_pct > 0
+                    spread_cond = current_net_pct > self.tg_config.get('min_spread_pct', 0.005)
                     
                     self.logger.debug(
                         f"👀 Checking {symbol}: Z={z_score:.2f} (Target > {z_threshold}), "

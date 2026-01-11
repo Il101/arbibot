@@ -168,7 +168,8 @@ telegram:
     # BDX: BDX # No mapping if they are different tokens
     PEPE1000: 1000PEPE
     DGRAM: DGRAMN
-    MSTRX: MSTR
+    MSTR: MSTRX
+    MSTRX: MSTRX
 
 # WebSocket configuration
 websocket:
