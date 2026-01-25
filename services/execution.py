@@ -170,7 +170,11 @@ class ExecutionEngine:
             amount = self.position_size_usdt / avg_price
             
             # Determine trade direction based on Z-Score
-            if z_score > 0:
+            # Z-Score is calculated in LiveMonitor as: (gross_spread - mean) / std
+            # Where gross_spread is negative if Exchange A is cheaper.
+            # So: Z-Score < 0 means Exchange A is undervalued (Cheaper) -> BUY A, SELL B
+            
+            if z_score < 0:
                 # A is cheaper, B is expensive
                 side_a = 'buy'
                 side_b = 'sell'
