@@ -142,6 +142,12 @@ class RealExchange(BaseExchange):
             'timestamp': ticker.get('timestamp', 0)
         }
     
+    async def fetch_order_book(self, symbol: str, limit: int = 20) -> Dict:
+        """
+        Fetch real order book from exchange.
+        """
+        return await self.client.fetch_order_book(symbol, limit)
+    
     async def create_order(
         self,
         symbol: str,

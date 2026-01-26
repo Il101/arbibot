@@ -36,17 +36,16 @@ trading:
   min_spread_pct: 0.003     # 0.3% minimum spread to cover fees
   estimated_fee: 0.002      # 0.2% total fees (0.1% per leg)
   
-  # Position sizing
-  default_position_size: 500   # USD
-  max_positions: 5             # Maximum concurrent positions
+  # Execution & Liquidity Management
+  execution:
+    max_slippage_pct: 0.002      # 0.2% maximum acceptable slippage
+    liquidity_depth_factor: 0.1  # Only use 10% of available depth for safety
+    min_depth_usdt: 200.0        # Skip trade if available depth < $200
   
-  # Time limits
-  max_position_time: 3600      # Seconds (1 hour max per position)
-
   # Trading Mode
   mode: 'PAPER'  # 'PAPER' or 'LIVE'
   paper_balance: 10000.0  # Starting balance for paper trading (USDT)
-  position_size_usdt: 100.0  # Fixed position size per trade
+  position_size_usdt: 100.0  # BASE position size (will be scaled down if thin depth)
   fee_rate: 0.0006  # 0.06% trading fee
   
 # Validation parameters

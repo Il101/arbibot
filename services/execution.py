@@ -67,9 +67,72 @@ class ExecutionEngine:
         
         self.logger.info(
             f"🚀 Multi-Exchange ExecutionEngine initialized ({self.mode} mode). "
-            f"Position Size: ${position_size_usdt}"
+            f"Base Position Size: ${position_size_usdt}"
         )
-    
+
+    async def _calculate_adaptive_size(self, symbol: str, client_a: BaseExchange, client_b: BaseExchange, side_a: str, side_b: str) -> float:
+        """
+        Calculate safe amount based on order book depth to minimize slippage.
+        """
+        try:
+            # 1. Get order books from both exchanges
+            book_a = await client_a.fetch_order_book(symbol, limit=20)
+            book_b = await client_b.fetch_order_book(symbol, limit=20)
+            
+            # The execution config is under trading.execution in config.yaml
+            exec_cfg = self.config.get('trading', {}).get('execution', {})
+            max_slippage = exec_cfg.get('max_slippage_pct', 0.002)
+            depth_factor = exec_cfg.get('liquidity_depth_factor', 0.1)
+            min_depth_required = exec_cfg.get('min_depth_usdt', 200.0)
+            
+            def get_safe_volume(targets, side, slippage_limit):
+                if not targets: return 0.0
+                best_price = targets[0][0]
+                # If buying, we can go up to best_price * (1 + limit)
+                # If selling, we can go down to best_price * (1 - limit)
+                is_buy = (side == 'buy')
+                limit_price = best_price * (1 + slippage_limit) if is_buy else best_price * (1 - slippage_limit)
+                
+                safe_vol_usdt = 0
+                for price, amount in targets:
+                    if (is_buy and price <= limit_price) or (not is_buy and price >= limit_price):
+                        safe_vol_usdt += price * amount
+                    else:
+                        break
+                return safe_vol_usdt
+            
+            # 2. Determine which side of the book we care about
+            # For BUY A, we look at ASKS on A. For SELL B, we look at BIDS on B.
+            side_a_targets = book_a['asks'] if side_a == 'buy' else book_a['bids']
+            side_b_targets = book_b['asks'] if side_b == 'buy' else book_b['bids']
+            
+            # 3. Calculate depth available within slippage limit on each exchange
+            depth_a = get_safe_volume(side_a_targets, side_a, max_slippage)
+            depth_b = get_safe_volume(side_b_targets, side_b, max_slippage)
+            
+            self.logger.debug(f"🔍 Depth check for {symbol}: A (${side_a})=${depth_a:.0f}, B (${side_b})=${depth_b:.0f}")
+            
+            # 4. Minimum depth check
+            if depth_a < min_depth_required or depth_b < min_depth_required:
+                self.logger.warning(f"⚠️ Insufficient depth for {symbol}: A=${depth_a:.0f}, B=${depth_b:.0f} (Min=${min_depth_required})")
+                return 0.0
+            
+            # 5. Calculate adaptive amount
+            # Use only a fraction of available depth for safety
+            safe_amount_usdt = min(depth_a, depth_b) * depth_factor
+            
+            # Final amount is min(safe_amount, default_position_size)
+            final_amount_usdt = min(safe_amount_usdt, self.position_size_usdt)
+            
+            if final_amount_usdt < self.position_size_usdt:
+                self.logger.info(f"⚖️ Adaptive sizing: Reduced {symbol} from ${self.position_size_usdt} to ${final_amount_usdt:.2f} due to depth")
+            
+            return final_amount_usdt
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating adaptive size: {e}")
+            return 0.0
+
     def _get_client(self, exchange_name: str) -> BaseExchange:
         """Get or create exchange client."""
         if exchange_name not in self.clients:
@@ -112,82 +175,70 @@ class ExecutionEngine:
     
     async def execute_arb_entry(self, symbol: str, z_score: float, ex_a: str, ex_b: str) -> bool:
         """
-        Execute arbitrage entry with rollback protection.
-        
-        Strategy:
-        - If Z-Score > 0: Buy on A (cheaper), Sell on B (expensive)
-        - If Z-Score < 0: Sell on A (expensive), Buy on B (cheaper)
-        
-        Args:
-            symbol: Trading pair
-            z_score: Z-Score value (determines direction)
-        
-        Returns:
-            True if successful, False otherwise
+        Execute arbitrage entry with adaptive sizing and depth protection.
         """
-        # Check if already busy
         if self.is_busy:
             self.logger.warning(f"⏸️  Execution busy, skipping {symbol}")
             return False
-        
-        # Check if already have position
+            
         if symbol in self.active_trades:
             self.logger.warning(f"⏸️  Already have position in {symbol}")
             return False
-        
-        # Check position limit
+            
         if len(self.active_trades) >= self.max_positions:
             self.logger.warning(f"⏸️  Max positions reached ({self.max_positions})")
             return False
-        
+            
         self.is_busy = True
         
         try:
-            # Get clients
+            # 1. Setup clients and directions
             client_a = self._get_client(ex_a)
             client_b = self._get_client(ex_b)
+            
+            if z_score < 0:
+                side_a, side_b = 'buy', 'sell'
+            else:
+                side_a, side_b = 'sell', 'buy'
+                
+            # 2. Calculate adaptive size based on depth
+            trade_amount_usdt = await self._calculate_adaptive_size(
+                symbol, client_a, client_b, side_a, side_b
+            )
+            
+            if trade_amount_usdt <= 0:
+                self.logger.warning(f"⚠️ Skipping {symbol} due to insufficient liquidity/size")
+                return False
 
-            # Check balances
+            # 3. Check balances against the actual trade amount
             balance_a = await client_a.get_balance()
             balance_b = await client_b.get_balance()
             
             free_a = balance_a.get('USDT', {}).get('free', 0)
             free_b = balance_b.get('USDT', {}).get('free', 0)
             
-            if free_a < self.position_size_usdt or free_b < self.position_size_usdt:
+            if free_a < trade_amount_usdt or free_b < trade_amount_usdt:
                 self.logger.error(
-                    f"❌ Insufficient balance: {ex_a}=${free_a:.2f}, {ex_b}=${free_b:.2f}"
+                    f"❌ Insufficient balance for reduced size (${trade_amount_usdt:.2f}): "
+                    f"{ex_a}=${free_a:.2f}, {ex_b}=${free_b:.2f}"
                 )
                 return False
             
-            # Get current prices
+            # 4. Get current prices for amount calculation
             ticker_a = await client_a.fetch_ticker(symbol)
             ticker_b = await client_b.fetch_ticker(symbol)
             
-            # Calculate position size in base currency
-            # Use mid price for sizing
             avg_price = (ticker_a['last'] + ticker_b['last']) / 2
-            amount = self.position_size_usdt / avg_price
+            amount = trade_amount_usdt / avg_price
             
-            # Determine trade direction based on Z-Score
-            # Z-Score is calculated in LiveMonitor as: (gross_spread - mean) / std
-            # Where gross_spread is negative if Exchange A is cheaper.
-            # So: Z-Score < 0 means Exchange A is undervalued (Cheaper) -> BUY A, SELL B
-            
-            if z_score < 0:
-                # A is cheaper, B is expensive
-                side_a = 'buy'
-                side_b = 'sell'
+            if side_a == 'buy':
                 entry_spread = ticker_b['bid'] - ticker_a['ask']
             else:
-                # A is expensive, B is cheaper
-                side_a = 'sell'
-                side_b = 'buy'
                 entry_spread = ticker_a['bid'] - ticker_b['ask']
             
             self.logger.info(
-                f"🚀 Opening arbitrage: {symbol}, Z-Score={z_score:.2f}, "
-                f"Spread=${entry_spread:.2f}, Size={amount:.6f}"
+                f"🚀 Opening adaptive arbitrage: {symbol}, Z-Score={z_score:.2f}, "
+                f"Spread=${entry_spread:.2f}, Amount=${trade_amount_usdt:.2f} ({amount:.6f} size)"
             )
             
             # ATOMIC EXECUTION WITH ROLLBACK

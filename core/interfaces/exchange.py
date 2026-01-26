@@ -129,6 +129,25 @@ class BaseExchange(ABC):
         pass
     
     @abstractmethod
+    async def fetch_order_book(self, symbol: str, limit: int = 20) -> Dict:
+        """
+        Get order book for a symbol.
+        
+        Args:
+            symbol: Trading pair (e.g., 'BTC/USDT')
+            limit: Number of levels to fetch
+            
+        Returns:
+            Order book in CCXT format:
+            {
+                'bids': [[price, amount], ...],
+                'asks': [[price, amount], ...],
+                'timestamp': 1234567890
+            }
+        """
+        pass
+    
+    @abstractmethod
     def get_exchange_name(self) -> str:
         """
         Get the exchange name.

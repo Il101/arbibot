@@ -156,6 +156,36 @@ class PaperExchange(BaseExchange):
             'timestamp': int(price_data.get('timestamp', time.time() * 1000))
         }
     
+    async def fetch_order_book(self, symbol: str, limit: int = 20) -> Dict:
+        """
+        Get simulated order book.
+        
+        Args:
+            symbol: Trading pair
+            limit: Number of levels
+            
+        Returns:
+            Simulated order book
+        """
+        ticker = await self.fetch_ticker(symbol)
+        
+        # Simulate depth with 0.01% steps
+        bids = []
+        asks = []
+        for i in range(limit):
+            spread_step = 0.0001 * (i + 1)
+            # Simulate some volume (e.g., $1000 per level)
+            vol = 1000.0 / ticker['last']
+            
+            bids.append([ticker['bid'] * (1 - spread_step), vol])
+            asks.append([ticker['ask'] * (1 + spread_step), vol])
+            
+        return {
+            'bids': bids,
+            'asks': asks,
+            'timestamp': ticker['timestamp']
+        }
+
     async def create_order(
         self,
         symbol: str,
