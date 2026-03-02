@@ -122,7 +122,26 @@ class LiveMonitor:
         self.running = False
         self.monitor_task: Optional[asyncio.Task] = None
         
+        # [H5] Subscribe to execution feedback for position state sync
+        self.event_bus.trade_opened.connect(self._on_trade_opened)
+        self.event_bus.trade_closed.connect(self._on_trade_closed)
+        
         self.logger.info("LiveMonitor initialized with hybrid Z-Score approach")
+    
+    def _on_trade_opened(self, trade_data: dict) -> None:
+        """[H5] Called when ExecutionEngine confirms a trade was opened."""
+        symbol = trade_data.get('symbol', '')
+        if symbol:
+            self.in_position[symbol] = True
+            self.logger.info(f"📍 Position state synced: {symbol} = IN_POSITION (confirmed by engine)")
+    
+    def _on_trade_closed(self, trade_data: dict) -> None:
+        """[H5] Called when ExecutionEngine confirms a trade was closed."""
+        symbol = trade_data.get('symbol', '')
+        if symbol:
+            self.in_position[symbol] = False
+            self.signal_counters.pop(symbol, None)  # Reset counters for fresh signals
+            self.logger.info(f"📍 Position state synced: {symbol} = NO_POSITION (confirmed by engine)")
     
     async def _preload_history(self, symbol: str, ex_a: str = 'bingx', ex_b: str = 'bybit') -> None:
         """
@@ -455,29 +474,26 @@ class LiveMonitor:
         # === TRIGGER ACTION ===
         
         # Check Entry Trigger
-        if self.signal_counters[symbol]['entry'] >= min_entry_ticks and not self.in_position[symbol]:
-            self.in_position[symbol] = True
+        # [H5] Don't set in_position here — wait for ExecutionEngine trade_opened callback
+        if self.signal_counters[symbol]['entry'] >= min_entry_ticks and not self.in_position.get(symbol, False):
             ex_a, ex_b = self.active_pairs[symbol]
             self.event_bus.emit_signal_triggered(symbol, 'ENTRY', z_score, ex_a, ex_b)
             
             self.logger.info(
-                f"🔔 ENTRY SIGNAL: {symbol} | Z-Score={z_score:.2f} | "
+                f"🔔 ENTRY SIGNAL EMITTED: {symbol} | Z-Score={z_score:.2f} | "
                 f"Net Spread={net_spread_pct:.3f}% | "
                 f"Confirmed for {self.signal_counters[symbol]['entry']} ticks"
             )
-            # Reset counter after action to prevent double firing? 
-            # Actually, keep it high or reset? 
-            # Resetting is safer to prevent immediate re-trigger if logic loops.
+            # Reset counter to prevent rapid re-triggering while engine processes
             self.signal_counters[symbol]['entry'] = 0
 
         # Check Exit Trigger
-        elif self.signal_counters[symbol]['exit'] >= min_exit_ticks and self.in_position[symbol]:
-            self.in_position[symbol] = False
+        elif self.signal_counters[symbol]['exit'] >= min_exit_ticks and self.in_position.get(symbol, False):
             ex_a, ex_b = self.active_pairs[symbol]
             self.event_bus.emit_signal_triggered(symbol, 'EXIT', z_score, ex_a, ex_b)
             
             self.logger.info(
-                f"🔔 EXIT SIGNAL: {symbol} | Z-Score={z_score:.2f} | "
+                f"🔔 EXIT SIGNAL EMITTED: {symbol} | Z-Score={z_score:.2f} | "
                 f"Confirmed for {self.signal_counters[symbol]['exit']} ticks. "
                 f"[Audit: NetSpread={net_spread_pct:.3f}%]"
             )

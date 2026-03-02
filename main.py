@@ -172,11 +172,13 @@ def run_analysis(args):
 
 def run_telegram_manager(args):
     """
-    Run Telegram Signal Manager to listen for signals
+    Run Telegram Signal Manager to listen for signals.
+    Includes graceful shutdown with position cleanup.
     """
     logger.info("Starting Telegram Signal Manager...")
     try:
         import asyncio
+        import signal as sig
         from services.telegram_manager import TelegramSignalManager
         from services.execution import ExecutionEngine
         
@@ -188,11 +190,33 @@ def run_telegram_manager(args):
             ws_manager=manager.monitor.ws_manager
         )
         
+        # Graceful shutdown handler
+        async def graceful_shutdown():
+            logger.warning("🔻 Graceful shutdown initiated...")
+            try:
+                await execution_engine.shutdown()
+            except Exception as e:
+                logger.error(f"Error during execution engine shutdown: {e}")
+            try:
+                await manager.stop()
+            except Exception as e:
+                logger.error(f"Error during telegram manager stop: {e}")
+            logger.info("✅ Shutdown complete.")
+        
+        def signal_handler(signum, frame):
+            logger.warning(f"Received signal {signum}, initiating graceful shutdown...")
+            loop = asyncio.get_event_loop()
+            loop.create_task(graceful_shutdown())
+        
+        # Register signal handlers
+        sig.signal(sig.SIGTERM, signal_handler)
+        sig.signal(sig.SIGINT, signal_handler)
+        
         # Run async manager
         try:
             asyncio.run(manager.start())
         except KeyboardInterrupt:
-            asyncio.run(manager.stop())
+            asyncio.run(graceful_shutdown())
             
     except Exception as e:
         logger.error(f"Telegram manager error: {e}", exc_info=True)

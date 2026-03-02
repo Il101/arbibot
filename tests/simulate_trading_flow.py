@@ -43,8 +43,8 @@ async def simulate_flow():
     print("\n--- PHASE 1: EMITTING ENTRY SIGNAL ---")
     bus.emit_signal_triggered('BTC/USDT', 'ENTRY', 3.5, 'bingx', 'bybit')
     
-    # Give it time to execute
-    await asyncio.sleep(1)
+    # Give it time to execute, CCXT fetching can take ~2s
+    await asyncio.sleep(4)
     
     if 'BTC/USDT' in engine.active_trades:
         print("✅ Trade successfully opened and tracked in ExecutionEngine.")
@@ -66,7 +66,7 @@ async def simulate_flow():
     bus.emit_signal_triggered('BTC/USDT', 'EXIT', 0.5, 'bingx', 'bybit')
     
     # Give it time to execute
-    await asyncio.sleep(1)
+    await asyncio.sleep(4)
     
     if 'BTC/USDT' not in engine.active_trades:
         print("✅ Trade successfully closed.")
@@ -82,6 +82,9 @@ async def simulate_flow():
             print(f"\n📄 Persisted State Check:")
             print(f"Balance BingX: ${state.get('bingx', {}).get('balance'):.2f}")
             print(f"Balance Bybit: ${state.get('bybit', {}).get('balance'):.2f}")
+            
+    # Cleanup
+    await engine.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(simulate_flow())
