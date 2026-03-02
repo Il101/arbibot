@@ -11,6 +11,8 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
+import asyncio
+import ccxt.async_support as ccxt
 
 from core.interfaces.exchange import BaseExchange
 from utils.logger import get_logger
@@ -51,6 +53,19 @@ class PaperExchange(BaseExchange):
         self.fee_rate = fee_rate
         self.state_file = Path(state_file)
         self.logger = get_logger(__name__)
+        
+        # CCXT Client for Real Orderbooks
+        self.ccxt_client = None
+        if hasattr(ccxt, exchange_name):
+            try:
+                self.ccxt_client = getattr(ccxt, exchange_name)({'enableRateLimit': True})
+            except Exception as e:
+                self.logger.warning(f"Failed to init CCXT for {exchange_name}: {e}")
+        else:
+            self.logger.warning(f"CCXT exchange {exchange_name} not found, falling back to synthetic orderbooks")
+            
+        self._orderbook_cache = {}  # {symbol: {'data': ob, 'timestamp': time}}
+        self._ob_cache_ttl = 1.0  # 1 second cache
         
         # State variables
         self.balance = initial_balance
@@ -165,8 +180,33 @@ class PaperExchange(BaseExchange):
             limit: Number of levels
             
         Returns:
-            Simulated order book
+            Order book
         """
+        now = time.time()
+        
+        # 1. Check Cache
+        cached = self._orderbook_cache.get(symbol)
+        if cached and (now - cached['timestamp']) < self._ob_cache_ttl:
+            return cached['data']
+            
+        # 2. Try fetching real order book via CCXT
+        if self.ccxt_client:
+            # CCXT expects symbols like 'BTC/USDT:USDT' for futures usually
+            ccxt_symbol = symbol
+            if self.exchange_name in ['bybit', 'bingx', 'bitget'] and ':' not in symbol:
+                ccxt_symbol = f"{symbol}:USDT"
+                
+            try:
+                ob = await asyncio.wait_for(
+                    self.ccxt_client.fetch_order_book(ccxt_symbol, limit),
+                    timeout=2.0
+                )
+                self._orderbook_cache[symbol] = {'data': ob, 'timestamp': now}
+                return ob
+            except Exception as e:
+                self.logger.debug(f"Failed to fetch real orderbook for {symbol}, falling back to synthetic: {e}")
+                
+        # 3. Fallback to Synthetic (from websockets)
         ticker = await self.fetch_ticker(symbol)
         
         # Simulate depth with 0.01% steps
@@ -180,11 +220,13 @@ class PaperExchange(BaseExchange):
             bids.append([ticker['bid'] * (1 - spread_step), vol])
             asks.append([ticker['ask'] * (1 + spread_step), vol])
             
-        return {
+        ob = {
             'bids': bids,
             'asks': asks,
             'timestamp': ticker['timestamp']
         }
+        self._orderbook_cache[symbol] = {'data': ob, 'timestamp': now}
+        return ob
 
     async def create_order(
         self,
@@ -223,33 +265,78 @@ class PaperExchange(BaseExchange):
         fee_cost = cost * self.fee_rate
         total_cost = cost + fee_cost
         
-        # Check balance
-        if total_cost > self.balance:
-            raise ValueError(
-                f"Insufficient balance: need ${total_cost:.2f}, have ${self.balance:.2f}"
-            )
-        
-        # Execute trade
-        self.balance -= total_cost
-        
-        # Create or update position
         if symbol in self.positions:
-            # Average down/up existing position
             existing = self.positions[symbol]
-            total_size = existing['size'] + amount
-            avg_price = (
-                (existing['entry_price'] * existing['size']) +
-                (execution_price * amount)
-            ) / total_size
-            
-            self.positions[symbol] = {
-                'side': side,
-                'size': total_size,
-                'entry_price': avg_price,
-                'entry_time': existing['entry_time']
-            }
+            if existing['side'] != side:
+                # We are closing or reducing a position
+                # Verify if we are taking more than we have
+                reduce_amount = min(amount, existing['size'])
+                remaining_amount = amount - reduce_amount
+                
+                # Calculate P&L for the reduced portion
+                if existing['side'] == 'buy':
+                    pnl = (execution_price - existing['entry_price']) * reduce_amount
+                else:
+                    pnl = (existing['entry_price'] - execution_price) * reduce_amount
+                
+                # Return allocated margin and add P&L, minus the fee cost of the closing trade
+                margin_freed = reduce_amount * existing['entry_price']
+                self.balance += margin_freed + pnl - fee_cost
+                
+                if abs(existing['size'] - reduce_amount) < 1e-8:
+                    del self.positions[symbol]
+                else:
+                    self.positions[symbol]['size'] -= reduce_amount
+                
+                if remaining_amount > 1e-8:
+                    # We closed the position and reversed the direction! Open new opposite position.
+                    # Verify we can afford to open the rest
+                    cost_rem = remaining_amount * execution_price
+                    fee_cost_rem = cost_rem * self.fee_rate
+                    total_cost_rem = cost_rem + fee_cost_rem
+                    
+                    if total_cost_rem > self.balance:
+                        raise ValueError(
+                            f"Insufficient balance for reverse trade: need ${total_cost_rem:.2f}, have ${self.balance:.2f}"
+                        )
+                    
+                    self.balance -= total_cost_rem
+                    self.positions[symbol] = {
+                        'side': side,
+                        'size': remaining_amount,
+                        'entry_price': execution_price,
+                        'entry_time': datetime.now().isoformat()
+                    }
+                    fee_cost += fee_cost_rem
+                    cost += cost_rem
+                    
+            else:
+                # Average down/up existing position
+                if total_cost > self.balance:
+                    raise ValueError(
+                        f"Insufficient balance: need ${total_cost:.2f}, have ${self.balance:.2f}"
+                    )
+                self.balance -= total_cost
+                total_size = existing['size'] + amount
+                avg_price = (
+                    (existing['entry_price'] * existing['size']) +
+                    (execution_price * amount)
+                ) / total_size
+                
+                self.positions[symbol] = {
+                    'side': side,
+                    'size': total_size,
+                    'entry_price': avg_price,
+                    'entry_time': existing['entry_time']
+                }
+                
         else:
             # New position
+            if total_cost > self.balance:
+                raise ValueError(
+                    f"Insufficient balance: need ${total_cost:.2f}, have ${self.balance:.2f}"
+                )
+            self.balance -= total_cost
             self.positions[symbol] = {
                 'side': side,
                 'size': amount,
@@ -297,13 +384,20 @@ class PaperExchange(BaseExchange):
             try:
                 # Get current market price
                 ticker = await self.fetch_ticker(symbol)
-                mark_price = (ticker['bid'] + ticker['ask']) / 2  # Mid price
                 
-                # Calculate unrealized P&L
+                # Calculate unrealized P&L using execution prices
                 if pos['side'] == 'buy':
-                    unrealized_pnl = (mark_price - pos['entry_price']) * pos['size']
+                    # To close a long, we would sell at bid
+                    close_price = ticker['bid']
+                    unrealized_pnl = (close_price - pos['entry_price']) * pos['size']
                 else:
-                    unrealized_pnl = (pos['entry_price'] - mark_price) * pos['size']
+                    # To close a short, we would buy at ask
+                    close_price = ticker['ask']
+                    unrealized_pnl = (pos['entry_price'] - close_price) * pos['size']
+                
+                # Subtract simulated closing fee from unrealized P&L
+                closing_fee = (close_price * pos['size']) * self.fee_rate
+                unrealized_pnl -= closing_fee
                 
                 # Calculate percentage
                 percentage = (unrealized_pnl / (pos['entry_price'] * pos['size'])) * 100
@@ -314,7 +408,7 @@ class PaperExchange(BaseExchange):
                     'contracts': pos['size'],
                     'contractSize': 1.0,
                     'entryPrice': pos['entry_price'],
-                    'markPrice': mark_price,
+                    'markPrice': close_price,
                     'unrealizedPnl': unrealized_pnl,
                     'percentage': percentage,
                     'timestamp': int(time.time() * 1000)
@@ -337,60 +431,38 @@ class PaperExchange(BaseExchange):
         """
         if symbol not in self.positions:
             raise ValueError(f"No open position for {symbol}")
-        
+            
         pos = self.positions[symbol]
+        side_to_close = 'sell' if pos['side'] == 'buy' else 'buy'
+        size_to_close = pos['size']
         
-        # Execute opposite side
-        opposite_side = 'sell' if pos['side'] == 'buy' else 'buy'
+        # We can just delegate to create_order!
+        # It handles P&L calculation and balance updates properly now.
+        order_resp = await self.create_order(symbol, side_to_close, size_to_close)
         
-        # Get current price for P&L calculation
-        ticker = await self.fetch_ticker(symbol)
-        close_price = ticker['bid'] if opposite_side == 'sell' else ticker['ask']
-        
-        # Calculate P&L
+        # Calculate Pnl merely for reporting
+        avg_price = order_resp['average']
         if pos['side'] == 'buy':
-            pnl = (close_price - pos['entry_price']) * pos['size']
+            pnl = (avg_price - pos['entry_price']) * size_to_close
         else:
-            pnl = (pos['entry_price'] - close_price) * pos['size']
+            pnl = (pos['entry_price'] - avg_price) * size_to_close
+            
+        pnl -= order_resp['fee']['cost']
         
-        # Close position (add proceeds back to balance)
-        proceeds = pos['size'] * close_price
-        fee_cost = proceeds * self.fee_rate
-        net_proceeds = proceeds - fee_cost
-        
-        self.balance += net_proceeds
-        
-        # Remove position
-        del self.positions[symbol]
-        
-        # Save state
-        self._save_state()
-        
-        # Generate order response
-        order_id = f"paper_{uuid.uuid4().hex[:8]}"
+        order_resp['pnl'] = pnl
         
         self.logger.info(
             f"📄 [PAPER] CLOSED {symbol}: P&L=${pnl:.2f} "
-            f"(Entry: ${pos['entry_price']:.2f}, Exit: ${close_price:.2f})"
+            f"(Entry: ${pos['entry_price']:.2f}, Exit: ${avg_price:.2f})"
         )
         
-        return {
-            'id': order_id,
-            'status': 'closed',
-            'symbol': symbol,
-            'side': opposite_side,
-            'type': 'market',
-            'filled': pos['size'],
-            'average': close_price,
-            'cost': proceeds,
-            'fee': {
-                'cost': fee_cost,
-                'currency': 'USDT'
-            },
-            'pnl': pnl,
-            'timestamp': int(time.time() * 1000)
-        }
+        return order_resp
     
     def get_exchange_name(self) -> str:
         """Get exchange name."""
         return self.exchange_name
+    
+    async def close(self) -> None:
+        """Close the CCXT client instance to prevent session warnings."""
+        if self.ccxt_client:
+            await self.ccxt_client.close()

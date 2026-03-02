@@ -90,9 +90,11 @@ async def test_paper_exchange():
     print(f"Entry: ${pos['entryPrice']:.2f}, Mark: ${pos['markPrice']:.2f}")
     print(f"Unrealized P&L: ${pos['unrealizedPnl']:.2f}")
     
-    # Entry: 50010, Mark: 51005 (Mid)
-    # P&L = (51005 - 50010) * 0.1 = 995 * 0.1 = 99.5
-    assert abs(pos['unrealizedPnl'] - 99.5) < 0.01, "P&L calculation incorrect"
+    # Entry: 50010, Mark: 51000 (Bid, for closing long)
+    # Gross P&L = (51000 - 50010) * 0.1 = 99.0
+    # Closing Fee = (51000 * 0.1) * 0.001 = 5.1
+    # Net Unrealized P&L = 99.0 - 5.1 = 93.9
+    assert abs(pos['unrealizedPnl'] - 93.9) < 0.01, "P&L calculation incorrect"
     print("✅ P&L Verified")
     
     # Test 3: State Persistence
@@ -119,7 +121,7 @@ async def test_paper_exchange():
     # Close at Bid (51000.0)
     # Proceeds = 5100.0
     # Fee = 5.1
-    # Net = 5094.9
+    # Net Proceeds = 5094.9
     close_order = await exchange_new.close_position('BTC/USDT')
     
     print(f"Closed @ ${close_order['average']}")
@@ -127,7 +129,10 @@ async def test_paper_exchange():
     
     # Entry: 50010, Exit: 51000
     # Gross P&L: (51000 - 50010) * 0.1 = 99.0
-    assert abs(close_order['pnl'] - 99.0) < 0.01, "Realized P&L incorrect"
+    # Realized P&L = Gross P&L - Fee on the Closing Trade
+    # Fee = (51000 * 0.1) * 0.001 = 5.1
+    # Net Realized P&L = 99.0 - 5.1 = 93.9
+    assert abs(close_order['pnl'] - 93.9) < 0.01, "Realized P&L incorrect"
     assert len(exchange_new.positions) == 0, "Position not removed"
     print("✅ Close Position Verified")
     

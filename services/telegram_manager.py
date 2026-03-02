@@ -35,6 +35,7 @@ class TelegramSignalManager:
         
         # Load config
         full_config = get_config(config_path)
+        self.config = full_config
         self.tg_config = full_config.get('telegram', {})
         
         self.validator = HistoricalValidator(config_path)
@@ -386,12 +387,13 @@ class TelegramSignalManager:
                             status_msg = False # Mark as attempted but failed
 
                     # Conditions (Z-score threshold and minimum profitable spread)
-                    z_cond = abs(z_score) > z_threshold
+                    z_entry = self.config.get('trading', {}).get('z_score_entry', 2.5)
+                    z_cond = abs(z_score) > z_entry
                     spread_cond = current_net_pct > self.tg_config.get('min_spread_pct', 0.005)
                     
                     self.logger.debug(
-                        f"👀 Checking {symbol}: Z={z_score:.2f} (Target > {z_threshold}), "
-                        f"Spread={net_spread_pct:.2f}% (Target > 0%)"
+                        f"👀 Checking {symbol}: Z={z_score:.2f} (Target > {z_entry}), "
+                        f"Spread={current_net_pct:.4f} (Target > 0)"
                     )
                     
                     # Direction Match Check

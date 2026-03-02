@@ -42,6 +42,12 @@ trading:
     liquidity_depth_factor: 0.1  # Only use 10% of available depth for safety
     min_depth_usdt: 200.0        # Skip trade if available depth < $200
   
+  # Risk Management (C4)
+  risk:
+    max_holding_time_seconds: 3600  # Force-close after 1 hour
+    max_loss_per_trade_usdt: 5.0   # Per-trade stop-loss ($5)
+    max_daily_loss_usdt: 20.0      # Circuit breaker: stop trading after -$20/day
+  
   # Trading Mode
   mode: 'PAPER'  # 'PAPER' or 'LIVE'
   paper_balance: 10000.0  # Starting balance for paper trading (USDT)
