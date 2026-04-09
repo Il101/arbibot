@@ -38,6 +38,11 @@ env/
 # Logs
 logs/
 *.log
+*.txt
+recent_logs.txt
+
+# Temporary test files
+tmp_*.py
 
 # Configuration (sensitive data)
 config/exchanges.yaml
